@@ -88,13 +88,20 @@ timer_elapsed (int64_t then) {
 }
 
 /* Suspends execution for approximately TICKS timer ticks. */
+/* 설계
+1. 현재 스레드의 인터럽트를 비활성화
+2. 알람시계 맞추기 : 깨워야될 시간(wakeup)을 저장
+3. wakeup 함수 만들기. 내부정렬을 한번 더해야되면 시간복잡도가 발생하기 때문에 깨울시각을 비교하는 함수 만들고,
+4. 알람 틱이 작다면 sleep_list 뒤로 삽입 (슬립리스트가 비어있다면?)
+5. block 상태로 만들고 인터럽트 활성화
+*/
+
 void
 timer_sleep (int64_t ticks) {
-	int64_t start = timer_ticks ();
-
+	int64_t start = timer_ticks();
 	ASSERT (intr_get_level () == INTR_ON);
-	while (timer_elapsed (start) < ticks)
-		thread_yield ();
+	int64_t wake_up_tick = start +ticks; //알람시계 맞추기
+	thread_sleep(wake_up_tick);
 }
 
 /* Suspends execution for approximately MS milliseconds. */
@@ -125,6 +132,7 @@ timer_print_stats (void) {
 static void
 timer_interrupt (struct intr_frame *args UNUSED) {
 	ticks++;
+	thread_wakeup(ticks);
 	thread_tick ();
 }
 
