@@ -92,9 +92,13 @@ struct thread {
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
 
+	// ! 정승영 코드 //
+	/* Alarm Clock에서 이 스레드가 깨어나야 하는 절대 tick. */
+	int64_t wake_tick;
+	// ! 끝 //
+
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
-
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */
@@ -142,5 +146,13 @@ int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
 void do_iret (struct intr_frame *tf);
+
+// ! 정승영 코드 //
+/* 현재 스레드를 WAKE_TICK까지 재우고 sleep_list에서 관리한다. */
+void thread_sleep (int64_t wake_tick);
+
+/* 기상 시간이 도달한 모든 스레드를 깨운다. */
+void thread_awake (void);
+// ! 끝 //
 
 #endif /* threads/thread.h */

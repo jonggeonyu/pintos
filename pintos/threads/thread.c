@@ -11,6 +11,7 @@
 #include "threads/synch.h"
 #include "threads/vaddr.h"
 #include "intrinsic.h"
+#include "devices/timer.h"       /* timer_ticks(). */
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -39,6 +40,25 @@ static struct lock tid_lock;
 
 /* Thread destruction requests */
 static struct list destruction_req;
+
+// ! 정승영 코드 //
+/*
+ * [Alarm Clock - Sleep List]
+ *
+ * 잠든 스레드를 wake_tick 오름차순으로 관리한다.
+ * 가장 먼저 깨어날 스레드가 리스트 앞에 있으므로 타이머 인터럽트마다
+ * 전체 리스트를 탐색하지 않고 앞부분의 만료된 스레드만 깨울 수 있다.
+ *
+ * 스레드의 상태와 리스트 원소(elem)를 함께 다루므로 thread.c가 소유하며,
+ * 다른 파일에서는 thread_sleep()과 thread_awake()를 통해서만 접근한다.
+ */
+static struct list sleep_list;
+
+static bool wake_tick_earlier (const struct list_elem *a,
+		const struct list_elem *b, void *aux);
+static bool priority_higher (const struct list_elem *a,
+		const struct list_elem *b, void *aux);
+// ! 끝 //
 
 /* Statistics. */
 static long long idle_ticks;    /* # of timer ticks spent idle. */
@@ -110,6 +130,11 @@ thread_init (void) {
 	list_init (&ready_list);
 	list_init (&destruction_req);
 
+	// ! 정승영 코드 //
+	/* Alarm Clock이 사용할 sleep_list를 빈 리스트로 초기화한다. */
+	list_init (&sleep_list);
+	// ! 끝 //
+
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
 	init_thread (initial_thread, "main", PRI_DEFAULT);
@@ -132,6 +157,43 @@ thread_start (void) {
 	/* Wait for the idle thread to initialize idle_thread. */
 	sema_down (&idle_started);
 }
+
+// ! 정승영 코드 //
+/* [Alarm Clock - Sleep]
+ * 현재 스레드의 절대 기상 시각을 저장하고 sleep_list에 넣은 뒤 BLOCKED
+ * 상태로 전환한다. 리스트 조작과 상태 전환 사이에 타이머 인터럽트가
+ * 끼어들지 못하도록 인터럽트를 잠시 비활성화한다. */
+void
+thread_sleep (int64_t wake_tick) {
+	struct thread *t = thread_current ();
+	enum intr_level old_level = intr_disable ();
+
+	t->wake_tick = wake_tick;
+	list_insert_ordered (&sleep_list, &t->elem, wake_tick_earlier, NULL);
+	thread_block ();
+	intr_set_level (old_level);
+}
+
+/* [Alarm Clock - Wake]
+ * 현재 tick까지 기상 시간이 도달한 스레드를 모두 깨운다.
+ * sleep_list가 wake_tick 순으로 정렬되어 있으므로 맨 앞 스레드가 아직
+ * 깨어날 시간이 아니라면 뒤의 스레드도 확인할 필요가 없다. */
+void
+thread_awake (void) {
+	int64_t current_tick = timer_ticks ();
+
+	while (!list_empty (&sleep_list)) {
+		struct list_elem *e = list_front (&sleep_list);
+		struct thread *t = list_entry (e, struct thread, elem);
+
+		if (t->wake_tick > current_tick)
+			break;
+
+		list_pop_front (&sleep_list);
+		thread_unblock (t);
+	}
+}
+// ! 끝 //
 
 /* Called by the timer interrupt handler at each timer tick.
    Thus, this function runs in an external interrupt context. */
@@ -240,7 +302,11 @@ thread_unblock (struct thread *t) {
 
 	old_level = intr_disable ();
 	ASSERT (t->status == THREAD_BLOCKED);
-	list_push_back (&ready_list, &t->elem);
+	// ! 정승영 코드 //
+	/* alarm-priority 테스트 요구사항에 따라, 같은 tick에 깨어난 스레드 중
+	 * 우선순위가 높은 스레드가 ready_list 앞에 오도록 삽입한다. */
+	list_insert_ordered (&ready_list, &t->elem, priority_higher, NULL);
+	// ! 끝 //
 	t->status = THREAD_READY;
 	intr_set_level (old_level);
 }
@@ -347,6 +413,29 @@ thread_get_recent_cpu (void) {
 	return 0;
 }
 
+// ! 정승영 코드 //
+/* A가 B보다 먼저 깨어나야 하면 true를 반환한다.
+ * sleep_list를 가장 이른 wake_tick부터 정렬할 때 사용한다. */
+static bool
+wake_tick_earlier (const struct list_elem *a,
+		const struct list_elem *b, void *aux UNUSED) {
+	struct thread *thread_a = list_entry (a, struct thread, elem);
+	struct thread *thread_b = list_entry (b, struct thread, elem);
+
+	return thread_a->wake_tick < thread_b->wake_tick;
+}
+
+/* A의 우선순위가 B보다 높으면 true를 반환한다.
+ * ready_list를 높은 우선순위부터 정렬할 때 사용한다. */
+static bool
+priority_higher (const struct list_elem *a,
+		const struct list_elem *b, void *aux UNUSED) {
+	struct thread *thread_a = list_entry (a, struct thread, elem);
+	struct thread *thread_b = list_entry (b, struct thread, elem);
+
+	return thread_a->priority > thread_b->priority;
+}
+// ! 끝 //
 /* Idle thread.  Executes when no other thread is ready to run.
 
    The idle thread is initially put on the ready list by

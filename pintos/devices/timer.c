@@ -87,15 +87,24 @@ timer_elapsed (int64_t then) {
 	return timer_ticks () - then;
 }
 
-/* Suspends execution for approximately TICKS timer ticks. */
+// ! 정승영 코드 //
+/* [Alarm Clock - Sleep]
+ * TICKS 후의 절대 기상 시각을 계산하여 현재 스레드를 재운다.
+ * 0 또는 음수는 기다릴 시간이 없으므로 즉시 반환한다.
+ * 기존의 thread_yield() 반복을 제거하여 잠든 동안 CPU를 소비하지 않는다. */
 void
 timer_sleep (int64_t ticks) {
-	int64_t start = timer_ticks ();
-
 	ASSERT (intr_get_level () == INTR_ON);
-	while (timer_elapsed (start) < ticks)
-		thread_yield ();
+
+	if (ticks <= 0)
+		return;
+
+	int64_t start = timer_ticks ();
+	int64_t wake_tick = start + ticks;
+
+	thread_sleep (wake_tick);
 }
+// ! 끝 //
 
 /* Suspends execution for approximately MS milliseconds. */
 void
@@ -126,6 +135,10 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED) {
 	ticks++;
 	thread_tick ();
+	// ! 정승영 코드 //
+	/* 현재 tick에 기상해야 하는 스레드를 BLOCKED에서 READY로 전환한다. */
+	thread_awake ();
+	// ! 끝 //
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
