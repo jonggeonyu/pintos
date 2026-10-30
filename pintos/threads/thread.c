@@ -315,11 +315,7 @@ thread_yield (void) {
 	intr_set_level (old_level);
 }
 
-/* 깨우는 시각 비교함수 
-스레드중에 어떤게 먼저 일어나야되는지 정렬하기 위해 비교 함수
-list entry로 스레드구조체 안의 list_elem 을 a,b로 연결 한다
-thread에 선언한 wakeup에 각 스레드 주소와 상태를 저장하고 스레드끼리 비교한다
-*/
+/* 깨우는 시각순으로 슬립리스트에서 스레드 비교 함수 */
 bool
 wake_up_comp (struct list_elem *a,struct list_elem *b,void *aux) {
 	struct thread *t1 = list_entry(a,struct thread,elem);
@@ -466,12 +462,42 @@ init_thread (struct thread *t, const char *name, int priority) {
    empty.  (If the running thread can continue running, then it
    will be in the run queue.)  If the run queue is empty, return
    idle_thread. */
+
+/* priority 레디리스트 구현
+재료: 우선순위 비교함수 , 레디리스트에서 탐색하는함수 구현 필요
+1. 깨어난 스레드 unblock에 레디리스트를 넣는다 list_push_back
+2. thread_yield 함수가 현재 스레드를 양보하는 함수 -> 스케줄러를 부름
+next_thread_to_run 에서 ready_list를 훑어 최고 우선순위를 찾고 list_remove로 빼서 반환
+3. 우선순위 높은것을 찾게되면 해당 스레드가 cpu를 선점한다 
+*/
+
+/* 우선순위 비교 함수 */
+bool
+thread_comp_priority (struct list_elem *t1,struct list_elem *t2,void *aux) {
+	struct thread *tp = list_entry(t1,struct thread,elem);
+	struct thread *tn = list_entry(t2,struct thread,elem);
+	return  tp->priority < tn->priority;
+}
+/* 레디리스트에서 탐색하는함수: 최고우선순위 찾아서 제거 
+선점->제거->반환
+1. 레디리스트에 있는 우선순위를 찾으려면? = 레디리스트에 있는 스레드 앞과 뒤 를 비교하는 함수가 필요
+2. 찾은 원소 제거하기
+3. 스레드 구조체 주소로 반환 
+*/
+
+static struct thread *
+ready_list_search (void) {
+	struct list_elem *max_thread = list_max(&ready_list,thread_comp_priority,NULL);
+	list_remove(max_thread);
+	return list_entry (max_thread, struct thread, elem);
+}
+
 static struct thread *
 next_thread_to_run (void) {
 	if (list_empty (&ready_list))
 		return idle_thread;
 	else
-		return list_entry (list_pop_front (&ready_list), struct thread, elem);
+		return ready_list_search();
 }
 
 /* Use iretq to launch the thread */
@@ -638,3 +664,4 @@ allocate_tid (void) {
 
 	return tid;
 }
+

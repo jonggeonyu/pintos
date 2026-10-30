@@ -129,6 +129,7 @@ timer_print_stats (void) {
 }
 
 /* Timer interrupt handler. */
+/* 깨운 인터럽트 레디리스트에 넣기 */
 static void
 timer_interrupt (struct intr_frame *args UNUSED) {
 	ticks++;
