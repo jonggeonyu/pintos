@@ -24,6 +24,8 @@
    Do not modify this value. */
 #define THREAD_BASIC 0xd42df210
 
+struct list sleep_list; //슬립 리스트
+
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
@@ -92,6 +94,7 @@ static uint64_t gdt[3] = { 0, 0x00af9a000000ffff, 0x00cf92000000ffff };
 
    It is not safe to call thread_current() until this function
    finishes. */
+
 void
 thread_init (void) {
 	ASSERT (intr_get_level () == INTR_OFF);
@@ -109,6 +112,8 @@ thread_init (void) {
 	lock_init (&tid_lock);
 	list_init (&ready_list);
 	list_init (&destruction_req);
+	list_init (&sleep_list); /* 잠든스레드 리스트 초기화 */
+
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
@@ -210,6 +215,8 @@ thread_create (const char *name, int priority,
 	return tid;
 }
 
+
+
 /* Puts the current thread to sleep.  It will not be scheduled
    again until awoken by thread_unblock().
 
@@ -307,6 +314,45 @@ thread_yield (void) {
 	do_schedule (THREAD_READY);
 	intr_set_level (old_level);
 }
+
+/* 깨우는 시각순으로 슬립리스트에서 스레드 비교 함수 */
+bool
+wake_up_comp (struct list_elem *a,struct list_elem *b,void *aux) {
+	struct thread *t1 = list_entry(a,struct thread,elem);
+	struct thread *t2 = list_entry(b,struct thread,elem);
+	return  t1->wake_up_tick < t2->wake_up_tick;
+}
+/* 스레드 재우기 */
+void
+thread_sleep (int64_t wake_up_tick) {
+	struct thread *curr = thread_current();
+	enum intr_level old_level = intr_disable();
+	curr->wake_up_tick = wake_up_tick;
+	list_insert_ordered(&sleep_list,&curr->elem,wake_up_comp,NULL); //정렬하기
+	thread_block();
+	intr_set_level(old_level);
+}
+/* 스레드 sleep list 함수 깨우기
+슬립리스트의 맨 앞에 있는것을 꺼내 unblock을 한다
+만약 비어있으면 ??? = 비어있는지 확인
+만약 동시에 깨는 시각이 같다면 ? = 일단 깨워-> 스케줄링이 알아서 처리
+같이 일어날 시각이랑 스레드 시각이랑 비교해서 깨우고 만약 아니면 break를 해야됨
+레디리스트 = FIFO 처리
+
+먼저 비어있는지 확인을 하고 깨어날 시각이 같은 스레드들 
+*/
+
+void
+thread_wakeup (int64_t ticks) {
+	while(!list_empty(&sleep_list)){
+		struct thread *t = list_entry(list_front(&sleep_list),struct thread,elem);
+		if (t->wake_up_tick > ticks)
+			break;
+		list_pop_front(&sleep_list);
+		thread_unblock(t);
+	}
+}
+
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
@@ -416,12 +462,42 @@ init_thread (struct thread *t, const char *name, int priority) {
    empty.  (If the running thread can continue running, then it
    will be in the run queue.)  If the run queue is empty, return
    idle_thread. */
+
+/* priority 레디리스트 구현
+재료: 우선순위 비교함수 , 레디리스트에서 탐색하는함수 구현 필요
+1. 깨어난 스레드 unblock에 레디리스트를 넣는다 list_push_back
+2. thread_yield 함수가 현재 스레드를 양보하는 함수 -> 스케줄러를 부름
+next_thread_to_run 에서 ready_list를 훑어 최고 우선순위를 찾고 list_remove로 빼서 반환
+3. 우선순위 높은것을 찾게되면 해당 스레드가 cpu를 선점한다 
+*/
+
+/* 우선순위 비교 함수 */
+bool
+thread_comp_priority (struct list_elem *t1,struct list_elem *t2,void *aux) {
+	struct thread *tp = list_entry(t1,struct thread,elem);
+	struct thread *tn = list_entry(t2,struct thread,elem);
+	return  tp->priority < tn->priority;
+}
+/* 레디리스트에서 탐색하는함수: 최고우선순위 찾아서 제거 
+선점->제거->반환
+1. 레디리스트에 있는 우선순위를 찾으려면? = 레디리스트에 있는 스레드 앞과 뒤 를 비교하는 함수가 필요
+2. 찾은 원소 제거하기
+3. 스레드 구조체 주소로 반환 
+*/
+
+static struct thread *
+ready_list_search (void) {
+	struct list_elem *max_thread = list_max(&ready_list,thread_comp_priority,NULL);
+	list_remove(max_thread);
+	return list_entry (max_thread, struct thread, elem);
+}
+
 static struct thread *
 next_thread_to_run (void) {
 	if (list_empty (&ready_list))
 		return idle_thread;
 	else
-		return list_entry (list_pop_front (&ready_list), struct thread, elem);
+		return ready_list_search();
 }
 
 /* Use iretq to launch the thread */
@@ -588,3 +664,4 @@ allocate_tid (void) {
 
 	return tid;
 }
+
