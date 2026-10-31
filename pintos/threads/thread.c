@@ -214,7 +214,19 @@ thread_create (const char *name, int priority,
 
 	return tid;
 }
-
+/* 최고 우선순위 호출 함수 */
+void
+thread_preemption(void) {
+	if(!list_empty(&ready_list)){
+		struct thread *high_thread_priority = list_entry(list_front(&ready_list),struct thread,elem);
+		if (high_thread_priority->priority > thread_current()->priority) {
+			if (intr_context ())
+				intr_yield_on_return();
+			else
+				thread_yield();
+		}
+	}
+}
 
 
 /* Puts the current thread to sleep.  It will not be scheduled

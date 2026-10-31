@@ -57,6 +57,21 @@ sema_init (struct semaphore *sema, unsigned value) {
    interrupts disabled, but if it sleeps then the next scheduled
    thread will probably turn interrupts back on. This is
    sema_down function. */
+
+/* 세마 우선순위 비교 함수 */
+bool
+sema_comp_priority (const struct list_elem *s1,const struct list_elem *s2,void *aux UNUSED) {
+	const struct thread *sp = list_entry(s1,struct thread,elem);
+	const struct thread *sn = list_entry(s2,struct thread,elem);
+	return  sp->priority > sn->priority;
+}
+
+/* 세마 사용가능한 공유자원이 없으면 sema waiters에 맨뒤에 추가
+list_push_back 말고 우선순위 순으로 맞춰서 sema waiters에 추가
+- 세마를 우선순위 대기열을 기준으로 정렬해서 삽입
+- 해당스레드를 block으로 만든다
+- 자원이 사용이 가능해지면 스레드가 깨어나고 세마포어값을 1로 만들어 자원을 차지한다
+*/
 void
 sema_down (struct semaphore *sema) {
 	enum intr_level old_level;
@@ -66,7 +81,7 @@ sema_down (struct semaphore *sema) {
 
 	old_level = intr_disable ();
 	while (sema->value == 0) {
-		list_push_back (&sema->waiters, &thread_current ()->elem);
+		list_insert_ordered (&sema->waiters, &thread_current ()->elem,sema_comp_priority,NULL);
 		thread_block ();
 	}
 	sema->value--;
@@ -97,11 +112,11 @@ sema_try_down (struct semaphore *sema) {
 
 	return success;
 }
-
 /* Up or "V" operation on a semaphore.  Increments SEMA's value
    and wakes up one thread of those waiting for SEMA, if any.
 
    This function may be called from an interrupt handler. */
+/* 현재 스레드보다 깨운 스레드가 높으면 양보 */
 void
 sema_up (struct semaphore *sema) {
 	enum intr_level old_level;
@@ -109,11 +124,16 @@ sema_up (struct semaphore *sema) {
 	ASSERT (sema != NULL);
 
 	old_level = intr_disable ();
-	if (!list_empty (&sema->waiters))
+	if (!list_empty (&sema->waiters)){
 		thread_unblock (list_entry (list_pop_front (&sema->waiters),
 					struct thread, elem));
+	}
+	else {
+
+	}
 	sema->value++;
 	intr_set_level (old_level);
+	thread_preemption();
 }
 
 static void sema_test_helper (void *sema_);
