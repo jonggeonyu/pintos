@@ -153,6 +153,10 @@ void thread_sleep (int64_t wake_tick);
 
 /* 기상 시간이 도달한 모든 스레드를 깨운다. */
 void thread_awake (void);
+
+/* thread.c와 synch.c가 공유하는 우선순위 비교 함수. */
+bool priority_higher (const struct list_elem *a,
+		const struct list_elem *b, void *aux UNUSED);
 // ! 끝 //
 
 #endif /* threads/thread.h */

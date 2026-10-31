@@ -56,8 +56,6 @@ static struct list sleep_list;
 
 static bool wake_tick_earlier (const struct list_elem *a,
 		const struct list_elem *b, void *aux);
-static bool priority_higher (const struct list_elem *a,
-		const struct list_elem *b, void *aux);
 // ! 끝 //
 
 /* Statistics. */
@@ -269,6 +267,14 @@ thread_create (const char *name, int priority,
 	/* Add to run queue. */
 	thread_unblock (t);
 
+	// ! 정승영 코드 //
+	/* 새 스레드의 우선순위가 더 높으면 CPU를 양보하여 즉시 선점한다.
+	 * 우선순위가 같으면 현재 스레드가 계속 실행한다. */
+	if (t->priority > thread_current ()->priority) {
+		thread_yield ();
+	}
+	// ! 끝 //
+
 	return tid;
 }
 
@@ -303,8 +309,8 @@ thread_unblock (struct thread *t) {
 	old_level = intr_disable ();
 	ASSERT (t->status == THREAD_BLOCKED);
 	// ! 정승영 코드 //
-	/* alarm-priority 테스트 요구사항에 따라, 같은 tick에 깨어난 스레드 중
-	 * 우선순위가 높은 스레드가 ready_list 앞에 오도록 삽입한다. */
+	/* READY 스레드를 우선순위순으로 삽입하여 가장 높은 스레드가
+	 * 다음 스케줄링에서 먼저 선택되도록 한다. */
 	list_insert_ordered (&ready_list, &t->elem, priority_higher, NULL);
 	// ! 끝 //
 	t->status = THREAD_READY;
@@ -368,8 +374,13 @@ thread_yield (void) {
 	ASSERT (!intr_context ());
 
 	old_level = intr_disable ();
-	if (curr != idle_thread)
-		list_push_back (&ready_list, &curr->elem);
+	if (curr != idle_thread) {
+		// ! 정승영 코드 //
+		/* 양보한 스레드도 우선순위순으로 ready_list에 다시 삽입한다. */
+		list_insert_ordered (&ready_list, &curr->elem,
+				priority_higher, NULL);
+		// ! 끝 //
+	}
 	do_schedule (THREAD_READY);
 	intr_set_level (old_level);
 }
@@ -377,7 +388,27 @@ thread_yield (void) {
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) {
-	thread_current ()->priority = new_priority;
+	// ! 정승영 코드 //
+	/* priority 변경과 ready_list 확인이 중간에 끊기지 않도록
+	 * 인터럽트를 잠시 끄고, 더 높은 스레드가 있으면 복구 후 양보한다. */
+	enum intr_level old_level = intr_disable ();
+	struct thread *curr = thread_current ();
+	bool should_yield = false;
+	
+	curr->priority = new_priority;
+
+	if (!list_empty (&ready_list)) {
+		struct thread *highest =
+			list_entry (list_front (&ready_list), struct thread, elem);
+
+		should_yield = curr->priority < highest->priority;
+	}
+
+	intr_set_level (old_level);
+
+	if (should_yield)
+		thread_yield ();
+	// ! 끝 //
 }
 
 /* Returns the current thread's priority. */
@@ -414,8 +445,8 @@ thread_get_recent_cpu (void) {
 }
 
 // ! 정승영 코드 //
-/* A가 B보다 먼저 깨어나야 하면 true를 반환한다.
- * sleep_list를 가장 이른 wake_tick부터 정렬할 때 사용한다. */
+/* sleep_list 전용 비교 함수이므로 thread.c 내부에서만 사용한다.
+ * A의 wake_tick이 더 이르면 true를 반환한다. */
 static bool
 wake_tick_earlier (const struct list_elem *a,
 		const struct list_elem *b, void *aux UNUSED) {
@@ -425,9 +456,10 @@ wake_tick_earlier (const struct list_elem *a,
 	return thread_a->wake_tick < thread_b->wake_tick;
 }
 
-/* A의 우선순위가 B보다 높으면 true를 반환한다.
- * ready_list를 높은 우선순위부터 정렬할 때 사용한다. */
-static bool
+/* ready_list와 semaphore waiters가 함께 사용하는 비교 함수이므로
+ * thread.h에 선언하여 thread.c와 synch.c에서 공유한다.
+ * A의 우선순위가 더 높으면 true를 반환한다. */
+bool
 priority_higher (const struct list_elem *a,
 		const struct list_elem *b, void *aux UNUSED) {
 	struct thread *thread_a = list_entry (a, struct thread, elem);
@@ -436,6 +468,7 @@ priority_higher (const struct list_elem *a,
 	return thread_a->priority > thread_b->priority;
 }
 // ! 끝 //
+
 /* Idle thread.  Executes when no other thread is ready to run.
 
    The idle thread is initially put on the ready list by

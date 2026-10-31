@@ -66,7 +66,11 @@ sema_down (struct semaphore *sema) {
 
 	old_level = intr_disable ();
 	while (sema->value == 0) {
-		list_push_back (&sema->waiters, &thread_current ()->elem);
+		// ! 정승영 코드 //
+		/* 우선순위가 높은 대기 스레드가 먼저 깨어나도록 정렬한다. */
+		list_insert_ordered (&sema->waiters, &thread_current ()->elem,
+				priority_higher, NULL);
+		// ! 끝 //
 		thread_block ();
 	}
 	sema->value--;
@@ -105,15 +109,33 @@ sema_try_down (struct semaphore *sema) {
 void
 sema_up (struct semaphore *sema) {
 	enum intr_level old_level;
+	bool should_yield = false;
 
 	ASSERT (sema != NULL);
 
 	old_level = intr_disable ();
-	if (!list_empty (&sema->waiters))
-		thread_unblock (list_entry (list_pop_front (&sema->waiters),
-					struct thread, elem));
+
+	// ! 정승영 코드 //
+	/* 가장 높은 우선순위의 대기자를 깨우고, 현재 스레드보다 우선순위가
+	 * 높으면 세마포어 상태 갱신 후 선점하도록 기록한다. */
+	if (!list_empty (&sema->waiters)) {
+		struct thread *t = list_entry (list_pop_front (&sema->waiters),
+				struct thread, elem);
+		should_yield = thread_current ()->priority < t->priority;
+		thread_unblock (t);
+	}
+
 	sema->value++;
 	intr_set_level (old_level);
+
+	/* 인터럽트 문맥에서는 즉시 yield할 수 없으므로 반환 시 선점한다. */
+	if (should_yield) {
+		if (intr_context ())
+			intr_yield_on_return ();
+		else
+			thread_yield ();
+	}
+	// ! 끝 //
 }
 
 static void sema_test_helper (void *sema_);
@@ -240,6 +262,7 @@ lock_held_by_current_thread (const struct lock *lock) {
 struct semaphore_elem {
 	struct list_elem elem;              /* List element. */
 	struct semaphore semaphore;         /* This semaphore. */
+	struct thread *thread;               /* Thread waiting on condition. */
 };
 
 /* Initializes condition variable COND.  A condition variable
@@ -250,6 +273,18 @@ cond_init (struct condition *cond) {
 	ASSERT (cond != NULL);
 
 	list_init (&cond->waiters);
+}
+
+static bool
+cond_priority_higher (const struct list_elem *a,
+		const struct list_elem *b, void *aux UNUSED) {
+	/* condition 대기자를 실제 대기 스레드의 우선순위로 비교한다. */
+	struct semaphore_elem *waiter_a =
+		list_entry (a, struct semaphore_elem, elem);
+	struct semaphore_elem *waiter_b =
+		list_entry (b, struct semaphore_elem, elem);
+
+	return waiter_a->thread->priority > waiter_b->thread->priority;
 }
 
 /* Atomically releases LOCK and waits for COND to be signaled by
@@ -281,8 +316,15 @@ cond_wait (struct condition *cond, struct lock *lock) {
 	ASSERT (!intr_context ());
 	ASSERT (lock_held_by_current_thread (lock));
 
+	// ! 정승영 코드 //
+	/* semaphore_elem과 현재 스레드를 연결하여 condition 대기 목록을
+	 * 실제 스레드 우선순위순으로 정렬한다. */
+	waiter.thread = thread_current ();
 	sema_init (&waiter.semaphore, 0);
-	list_push_back (&cond->waiters, &waiter.elem);
+	list_insert_ordered (&cond->waiters, &waiter.elem,
+			cond_priority_higher, NULL);
+	// ! 끝 //
+
 	lock_release (lock);
 	sema_down (&waiter.semaphore);
 	lock_acquire (lock);
